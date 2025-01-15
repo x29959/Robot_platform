@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Real-Time Spectrometer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.min.js"
+            crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            text-align: center;
+        }
+        #video-stream {
+            width: 640px;
+            height: 480px;
+            border: 1px solid #ccc;
+            margin-bottom: 20px;
+        }
+        #chart-container {
+            width: 800px;
+            margin: 0 auto;
+        }
+        /* Modal */
+        #modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+        }
+        #coeff-modal, #label-modal {
+            display: none;
+            position: fixed;
+            top: 20%;
+            left: 35%;
+            width: 30%;
+            padding: 20px;
+            background-color: #f0f0f0;
+            border:1px solid #ccc;
+            z-index: 1000;
+        }
+        #coeff-modal.active, #modal-overlay.active, #label-modal.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-Time Spectrometer</h1>
+
+    <!-- 視訊畫面 -->
+    <div id="video-stream">
+        <img id="video-frame" src="" alt="Video Stream" width="640" height="480">
+    </div>
+
+    <!-- 控制面板 -->
+    <div>
+        <!-- 相機選擇 -->
+        <label for="camera-select">選擇相機:</label>
+        <select id="camera-select">
+            {% for cam in cameras %}
+                <option value="{{ cam }}">USB {{ cam }}</option>
+            {% endfor %}
+        </select>
+        <button id="select-camera-btn">選擇相機</button>
+        <br><br>
+
+        <!-- 設備選擇 -->
+        <label for="device-select">選擇設備:</label>
+        <select id="device-select">
+            <option value="">--選擇設備--</option>
+            <option value="Ship">船</option>
+            <option value="Drone">無人機</option>
+            <option value="Submarine">潛水艇</option>
+        </select>
+        <button id="select-device-btn">選擇設備</button>
+        <br><br>
+
+        <!-- 標籤管理 -->
+        <div>
+            <label>設備標籤:</label>
+            <select id="labels-select">
+                <option value="">--選擇標籤--</option>
+            </select>
+            <button id="edit-label-btn" disabled>編輯標籤</button>
+            <button id="delete-label-btn" disabled>刪除標籤</button>
+        </div>
+        <br>
+
+        <!-- 波長輸入 -->
+        <label for="wavelength_min">波長最小值 (nm):</label>
+        <input type="number" id="wavelength_min" step="any">
+        <br><br>
+        <label for="wavelength_max">波長最大值 (nm):</label>
+        <input type="number" id="wavelength_max" step="any">
+        <br><br>
+
+        <!-- 監控控制 -->
+        <button id="start-monitoring-btn">開始監控</button>
+        <button id="stop-monitoring-btn">停止監控</button>
+        <br><br>
+
+        <!-- 係數 + 保存按鈕 -->
+        <button id="update-coeffs-btn">更新係數</button>
+        <button id="save-spectrum-btn">保存光譜</button>
+        <br><br>
+
+        <!-- 新增推理頁面按鈕 -->
+        <button id="go-to-inference-btn">前往推理頁面</button>
+    </div>
+
+    <!-- 圖表 -->
+    <div id="chart-container">
+        <canvas id="wavelength-chart"></canvas>
+    </div>
+
+    <!-- Modal for coefficients -->
+    <div id="modal-overlay"></div>
+    <div id="coeff-modal">
+        <h2>更新係數</h2>
+        <form id="coeff-form">
+            <label for="a0">a0:</label><br>
+            <input type="number" step="any" id="a0"><br><br>
+            <label for="a1">a1:</label><br>
+            <input type="number" step="any" id="a1"><br><br>
+            <label for="a2">a2:</label><br>
+            <input type="number" step="any" id="a2"><br><br>
+            <label for="ROI">ROI (起始列):</label><br>
+            <input type="number" id="ROI"><br><br>
+            <button type="submit">更新</button>
+            <button type="button" id="close-modal-btn">取消</button>
+        </form>
+    </div>
+
+    <!-- Modal for label add/edit -->
+    <div id="label-modal">
+        <h2 id="label-modal-title">新增標籤</h2>
+        <form id="label-form">
+            <input type="hidden" id="label-id">
+            <label for="label-name">標籤名稱:</label><br>
+            <input type="text" id="label-name"><br><br>
+            <label for="label-wavelength-min">波長最小值 (nm):</label><br>
+            <input type="number" step="any" id="label-wavelength-min"><br><br>
+            <label for="label-wavelength-max">波長最大值 (nm):</label><br>
+            <input type="number" step="any" id="label-wavelength-max"><br><br>
+            <button type="submit">保存</button>
+            <button type="button" id="close-label-modal-btn">取消</button>
+        </form>
+    </div>
+
+    <script>
+        // =========================================
+        // 初始化 Socket.IO
+        // =========================================
+        const socket = io();
+
+        // DOM
+        const videoFrame = document.getElementById('video-frame');
+        const cameraSelect = document.getElementById('camera-select');
+        const selectCameraBtn = document.getElementById('select-camera-btn');
+        const deviceSelect = document.getElementById('device-select');
+        const selectDeviceBtn = document.getElementById('select-device-btn');
+
+        const labelsSelect = document.getElementById('labels-select');
+        const editLabelBtn = document.getElementById('edit-label-btn');
+        const deleteLabelBtn = document.getElementById('delete-label-btn');
+
+        const wavelengthMinInput = document.getElementById('wavelength_min');
+        const wavelengthMaxInput = document.getElementById('wavelength_max');
+        const startMonitoringBtn = document.getElementById('start-monitoring-btn');
+        const stopMonitoringBtn = document.getElementById('stop-monitoring-btn');
+
+        const updateCoeffsBtn = document.getElementById('update-coeffs-btn');
+        const saveSpectrumBtn = document.getElementById('save-spectrum-btn');
+
+        const goToInferenceBtn = document.getElementById('go-to-inference-btn');
+
+        // Coeff modal
+        const coeffModal = document.getElementById('coeff-modal');
+        const modalOverlay = document.getElementById('modal-overlay');
+        const closeModalBtn = document.getElementById('close-modal-btn');
+        const coeffForm = document.getElementById('coeff-form');
+
+        // Label modal
+        const labelModal = document.getElementById('label-modal');
+        const labelModalTitle = document.getElementById('label-modal-title');
+        const labelForm = document.getElementById('label-form');
+        const labelIdInput = document.getElementById('label-id');
+        const labelNameInput = document.getElementById('label-name');
+        const labelWminInput = document.getElementById('label-wavelength-min');
+        const labelWmaxInput = document.getElementById('label-wavelength-max');
+        const closeLabelModalBtn = document.getElementById('close-label-modal-btn');
+
+        let selectedDevice = null;
+        let monitoring = false;
+
+        // =========================================
+        // 初始化 Chart.js
+        // =========================================
+        let chart;
+        function initChart() {
+            const ctx = document.getElementById('wavelength-chart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: '強度',
+                        data: [],
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 1,
+                        fill: false,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    animation: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            position: 'bottom',
+                            title: {
+                                display: true,
+                                text: '波長 (nm)'
+                            },
+                            min: 0,
+                            max: 10000
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: '強度'
+                            },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+        initChart();
+
+        // =========================================
+        // Socket 事件
+        // =========================================
+        socket.on('video_frame', (data) => {
+            if (data && data.image) {
+                const arr = new Uint8Array(data.image);
+                const blob = new Blob([arr], { type: 'image/jpeg' });
+                const urlCreator = window.URL || window.webkitURL;
+                videoFrame.src = urlCreator.createObjectURL(blob);
+            }
+        });
+
+        socket.on('wavelength_data', (data) => {
+            if (monitoring && data.wavelengths && data.intensities) {
+                chart.data.labels = data.wavelengths;
+                chart.data.datasets[0].data = data.intensities;
+                chart.update();
+            }
+        });
+
+        socket.on('monitoring_status', (data) => {
+            if (data.status === 'started') {
+                console.log('監控已開始');
+                chart.data.labels = [];
+                chart.data.datasets[0].data = [];
+                chart.update();
+            } else if (data.status === 'stopped') {
+                console.log('監控已停止');
+            }
+        });
+
+        // Inference相關Socket事件
+        socket.on('inference_result', (data) => {
+            // 可以在推理頁面中處理
+            // 此處僅為示範，具體實現需在推理頁面中處理
+            // 可考慮使用不同的事件名稱或命名空間
+            console.log('收到推理結果:', data);
+        });
+
+        socket.on('inference_status', (data) => {
+            if (data.status === 'started') {
+                alert('推理已開始');
+            } else if (data.status === 'stopped') {
+                alert('推理已停止');
+            } else if (data.status === 'error') {
+                alert('推理錯誤: ' + data.message);
+            }
+        });
+
+        socket.on('error', (data) => {
+            alert("錯誤: " + data.message);
+        });
+
+        socket.on('camera_status', (data) => {
+            if (data.status === 'success') {
+                alert(`相機 ${data.camera_index} 開啟成功`);
+            } else if (data.status === 'fail') {
+                alert(`相機 ${data.camera_index} 無法開啟`);
+            } else {
+                alert(`無效相機索引: ${data.camera_index}`);
+            }
+        });
+
+        socket.on('device_selected', (data) => {
+            if (data.status === 'success') {
+                alert("設備選擇成功");
+                // 重新載入標籤
+                fetch(`/get_labels?device=${selectedDevice}`)
+                  .then(r => r.json())
+                  .then(j => {
+                      if (j.status === 'success') {
+                          labelsSelect.innerHTML = '<option value="">--選擇標籤--</option>';
+                          j.labels.forEach(lbl => {
+                              const opt = document.createElement('option');
+                              opt.value = lbl.id;
+                              opt.textContent = `${lbl.name} (${lbl.wavelength_min} - ${lbl.wavelength_max} nm)`;
+                              opt.dataset.wmin = lbl.wavelength_min;
+                              opt.dataset.wmax = lbl.wavelength_max;
+                              labelsSelect.appendChild(opt);
+                          });
+                          const addOpt = document.createElement('option');
+                          addOpt.value = 'add_label';
+                          addOpt.textContent = '--新增標籤--';
+                          labelsSelect.appendChild(addOpt);
+                          editLabelBtn.disabled = true;
+                          deleteLabelBtn.disabled = true;
+                      }
+                  })
+                  .catch(err => console.error(err));
+            } else {
+                alert("選擇設備失敗: " + data.message);
+            }
+        });
+
+        // =========================================
+        // 事件綁定
+        // =========================================
+        selectCameraBtn.addEventListener('click', () => {
+            const idx = parseInt(cameraSelect.value);
+            socket.emit('select_camera', { camera_index: idx });
+        });
+
+        selectDeviceBtn.addEventListener('click', () => {
+            const dev = deviceSelect.value;
+            if (!dev) {
+                alert("請先選擇設備");
+                return;
+            }
+            selectedDevice = dev;
+            socket.emit('select_device', { device: dev });
+        });
+
+        startMonitoringBtn.addEventListener('click', () => {
+            const wmin = parseFloat(wavelengthMinInput.value);
+            const wmax = parseFloat(wavelengthMaxInput.value);
+            if (isNaN(wmin) || isNaN(wmax)) {
+                alert("請輸入正確的數字");
+                return;
+            }
+            if (!selectedDevice) {
+                alert("請先選擇設備");
+                return;
+            }
+            monitoring = true;
+            socket.emit('start_monitoring', {
+                wavelength_min: wmin,
+                wavelength_max: wmax,
+                device: selectedDevice
+            });
+        });
+
+        stopMonitoringBtn.addEventListener('click', () => {
+            monitoring = false;
+            socket.emit('stop_monitoring');
+        });
+
+        // 更新係數
+        updateCoeffsBtn.addEventListener('click', () => {
+            coeffModal.classList.add('active');
+            modalOverlay.classList.add('active');
+        });
+        closeModalBtn.addEventListener('click', () => {
+            coeffModal.classList.remove('active');
+            modalOverlay.classList.remove('active');
+        });
+        coeffForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const a0Val = parseFloat(document.getElementById('a0').value);
+            const a1Val = parseFloat(document.getElementById('a1').value);
+            const a2Val = parseFloat(document.getElementById('a2').value);
+            const ROIVal = parseInt(document.getElementById('ROI').value);
+
+            fetch('/update_coefficients', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    a0: a0Val,
+                    a1: a1Val,
+                    a2: a2Val,
+                    ROI: ROIVal
+                })
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.status === 'success') {
+                    alert("係數更新成功");
+                    coeffModal.classList.remove('active');
+                    modalOverlay.classList.remove('active');
+                } else {
+                    alert("更新失敗: " + d.message);
+                }
+            })
+            .catch(err => console.error(err));
+        });
+
+        // 保存光譜
+        saveSpectrumBtn.addEventListener('click', () => {
+            if (!selectedDevice) {
+                alert("請先選擇設備");
+                return;
+            }
+            const lblId = labelsSelect.value;
+            if (!lblId || lblId === 'add_label') {
+                alert("請先選擇一個標籤");
+                return;
+            }
+            fetch('/save_spectrum', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    device: selectedDevice,
+                    label_id: parseInt(lblId)
+                })
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.status === 'success') {
+                    alert("已成功寫入多行資料並刪除暫存檔");
+                } else {
+                    alert("保存失敗: " + d.message);
+                }
+            })
+            .catch(err => console.error(err));
+        });
+
+        // 前往推理頁面
+        goToInferenceBtn.addEventListener('click', () => {
+            window.location.href = '/inference';
+        });
+
+        // 標籤選擇
+        labelsSelect.addEventListener('change', () => {
+            const val = labelsSelect.value;
+            if (!val) {
+                editLabelBtn.disabled = true;
+                deleteLabelBtn.disabled = true;
+            } else if (val === 'add_label') {
+                // 新增標籤
+                labelModalTitle.textContent = '新增標籤';
+                labelIdInput.value = '';
+                labelNameInput.value = '';
+                labelWminInput.value = '';
+                labelWmaxInput.value = '';
+                labelModal.classList.add('active');
+                modalOverlay.classList.add('active');
+                labelsSelect.selectedIndex = 0;
+                editLabelBtn.disabled = true;
+                deleteLabelBtn.disabled = true;
+            } else {
+                editLabelBtn.disabled = false;
+                deleteLabelBtn.disabled = false;
+                const opt = labelsSelect.options[labelsSelect.selectedIndex];
+                wavelengthMinInput.value = opt.dataset.wmin;
+                wavelengthMaxInput.value = opt.dataset.wmax;
+            }
+        });
+
+        // 編輯標籤
+        editLabelBtn.addEventListener('click', () => {
+            const lblId = labelsSelect.value;
+            if (!lblId) {
+                alert("請先選擇標籤");
+                return;
+            }
+            labelModalTitle.textContent = '編輯標籤';
+            labelIdInput.value = lblId;
+            const opt = labelsSelect.options[labelsSelect.selectedIndex];
+            labelNameInput.value = opt.textContent.split(' (')[0];
+            labelWminInput.value = opt.dataset.wmin;
+            labelWmaxInput.value = opt.dataset.wmax;
+            labelModal.classList.add('active');
+            modalOverlay.classList.add('active');
+        });
+
+        // 刪除標籤
+        deleteLabelBtn.addEventListener('click', () => {
+            const lblId = labelsSelect.value;
+            if (!lblId) {
+                alert("請先選擇標籤");
+                return;
+            }
+            if (!confirm("確定要刪除此標籤嗎?")) return;
+            fetch('/delete_label', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    device: selectedDevice,
+                    id: parseInt(lblId)
+                })
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.status === 'success') {
+                    alert("標籤已刪除");
+                    socket.emit('select_device', { device: selectedDevice });
+                } else {
+                    alert("刪除標籤失敗: " + d.message);
+                }
+            })
+            .catch(err => console.error(err));
+        });
+
+        // 標籤 Modal
+        closeLabelModalBtn.addEventListener('click', () => {
+            labelModal.classList.remove('active');
+            modalOverlay.classList.remove('active');
+        });
+
+        labelForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const lblId = labelIdInput.value;
+            const lblName = labelNameInput.value.trim();
+            const wmin = parseFloat(labelWminInput.value);
+            const wmax = parseFloat(labelWmaxInput.value);
+
+            if (!lblName) {
+                alert("請輸入標籤名稱");
+                return;
+            }
+            if (isNaN(wmin) || isNaN(wmax)) {
+                alert("請輸入正確的波長範圍");
+                return;
+            }
+            if (!selectedDevice) {
+                alert("請先選擇設備");
+                return;
+            }
+
+            const apiUrl = lblId ? '/edit_label' : '/add_label';
+            const payload = lblId
+                ? { device: selectedDevice, id: parseInt(lblId), name: lblName, wavelength_min: wmin, wavelength_max: wmax }
+                : { device: selectedDevice, name: lblName, wavelength_min: wmin, wavelength_max: wmax };
+
+            fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.status === 'success') {
+                    alert(lblId ? '標籤已編輯' : '標籤已新增');
+                    labelModal.classList.remove('active');
+                    modalOverlay.classList.remove('active');
+                    socket.emit('select_device', { device: selectedDevice });
+                } else {
+                    alert("操作失敗: " + d.message);
+                }
+            })
+            .catch(err => console.error(err));
+        });
+    </script>
+</body>
+</html>

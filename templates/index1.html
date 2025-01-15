@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI 群體智慧機器人戰情指揮中心 AI swarm intelligence robots command center </title>
+    <!-- 引入 Bootstrap 5 CSS（官方 CDN） -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <style>
+      body {
+        background-color: #000; /* 黑色背景 */
+        color: #fff; /* 白色文字 */
+        margin: 0;
+        font-size: 1.1rem;
+      }
+      .device-section {
+        display: none;
+      }
+      .active-section {
+        display: block;
+      }
+      .section-title {
+        margin-bottom: 0.6rem;
+        border-bottom: 1px solid #888;
+        padding-bottom: 0.3rem;
+        font-size: 1.3rem;
+        font-weight: bold;
+      }
+      .imu-table {
+        font-size: 1rem;
+      }
+      .control-btn {
+        font-size: 1.1rem;
+        margin: 0.1rem;
+        padding: 0.5rem 0.8rem;
+      }
+      .main-btn {
+        font-size: 2.0rem;
+        margin: 0rem;
+        min-width: 100px;
+        min-height: 45px;
+      }
+      .row-margin {
+        margin-bottom: 0.5rem;
+      }
+      .device-container {
+        padding-top: 0.5rem;
+        padding-bottom: 0.5rem;
+      }
+      .camera-feed {
+        width: 100%;
+        height: auto;
+        border: none;
+      }
+      .status-info {
+        background-color: #333;
+        padding: 0.5rem;
+        border-radius: 0.25rem;
+        height: 220px;
+        overflow: auto;
+      }
+      .table-dark th,
+      .table-dark td {
+        color: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 首頁主要的裝置按鈕區 -->
+    <div
+      class="container-fluid d-flex flex-column justify-content-center align-items-center"
+      id="main-buttons-area"
+    >
+      <h1 class="text-center mb-3" style="font-size: 5rem; font-weight: bold;">
+        AI 群體智慧機器人指揮中心
+      </h1>
+      <div class="text-center">
+        <button class="btn btn-success main-btn" onclick="chooseDevice('drone')">
+          無人機 Drone
+        </button>
+        <button class="btn btn-warning main-btn" onclick="chooseDevice('ground')">
+          地面機器人 TEMI robot
+        </button>
+        <button class="btn btn-info text-dark main-btn" onclick="chooseDevice('boat')">
+          無人船 Ship
+        </button>
+        <button class="btn btn-danger main-btn" onclick="chooseDevice('submarine')">
+          無人潛艇 Submarine
+        </button>
+      </div>
+    </div>
+
+    <!-- ======== 各裝置操作區塊 ======== -->
+    <div class="container device-container">
+      <!-- ======== 無人機 (Drone) ======== -->
+      <div id="drone" class="device-section">
+        <h2 class="section-title">無人機控制介面 Drone control panel </h2>
+        <div class="row row-margin">
+          <div class="col-md-6 mb-2">
+            <div class="mb-1">無人機攝影畫面 Drone camera： </div>
+            <div class="border rounded bg-secondary p-2">
+              <!-- 無人機相機串流 -->
+              <img
+                src="{{ url_for('video_feed') }}"
+                class="camera-feed"
+                alt="Drone Camera Feed"
+              />
+            </div>
+          </div>
+          <div class="col-md-6 mb-2">
+            <div class="mb-1">監控資訊 Monitor：</div>
+            <div class="border rounded bg-secondary p-2 status-info" id="drone-status">
+              <span>正在載入狀態資訊 Loading...</span>
+            </div>
+          </div>
+        </div>
+        <!-- 開啟/關閉相機 & 監控 -->
+        <div class="row row-margin">
+          <div class="col text-center">
+            <button class="btn btn-outline-light control-btn" onclick="sendDroneCommand('open_camera')">開啟相機 Open Camera</button>
+            <button class="btn btn-outline-light control-btn" onclick="sendDroneCommand('close_camera')">關閉相機 Close camera</button>
+            <button class="btn btn-outline-light control-btn" onclick="sendDroneCommand('open_monitoring')">開啟監控 Open monitor</button>
+            <button class="btn btn-outline-light control-btn" onclick="sendDroneCommand('close_monitoring')">關閉監控 Close monitor</button>
+          </div>
+        </div>
+        <!-- 控制按鈕群 -->
+        <div class="row row-margin">
+          <div class="col text-center">
+            <button class="btn btn-success control-btn" onclick="sendDroneCommand('takeoff')">起飛 Take off</button>
+            <button class="btn btn-success control-btn" onclick="sendDroneCommand('land')">降落 Landing </button>
+            <button class="btn btn-success control-btn" onclick="sendDroneCommand('up')">上 Up</button>
+            <button class="btn btn-success control-btn" onclick="sendDroneCommand('down')">下 Down</button>
+            <button class="btn btn-success control-btn" onclick="sendDroneCommand('forward', {distance: 0.5})">前進 Forward</button>
+            <button class="btn btn-success control-btn" onclick="sendDroneCommand('backward', {distance: 0.5})">後退 Backward</button>
+            <button class="btn btn-danger control-btn" onclick="sendDroneCommand('emergency')">緊急停止 Emergency stop</button>
+          </div>
+        </div>
+        <!-- 此處 無人機 不提供 ASR / 旋轉角度 -->
+      </div>
+
+      <!-- ======== 地面機器人 (Ground Robot) ======== -->
+      <div id="ground" class="device-section">
+        <h2 class="section-title">地面機器人控制介面</h2>
+        <div class="row row-margin">
+          <div class="col-md-6 mb-2">
+            <div class="mb-1">地面機器人攝影畫面：</div>
+            <div class="border rounded bg-secondary p-2" style="height: 290px;">
+              <!-- 地面機器人相機串流 -->
+              <img
+                src="{{ url_for('ground_video_feed') }}"
+                class="camera-feed"
+                alt="Ground Robot Camera Feed"
+              />
+            </div>
+          </div>
+          <div class="col-md-6 mb-2">
+            <div class="mb-1">狀態資訊：</div>
+            <div class="border rounded bg-secondary p-2 status-info" id="ground-status">
+              <span>正在載入狀態資訊...</span>
+            </div>
+          </div>
+        </div>
+        <!-- 開啟/關閉相機 & 監控 -->
+        <div class="row row-margin">
+          <div class="col text-center">
+            <button class="btn btn-outline-light control-btn" onclick="openGroundCamera()">開啟相機</button>
+            <button class="btn btn-outline-light control-btn" onclick="closeGroundCamera()">關閉相機</button>
+            <button class="btn btn-outline-light control-btn" onclick="sendGroundCommand('open_monitoring')">開啟監控</button>
+            <button class="btn btn-outline-light control-btn" onclick="sendGroundCommand('close_monitoring')">關閉監控</button>
+          </div>
+        </div>
+        <!-- 控制按鈕群 -->
+        <div class="row row-margin">
+          <div class="col text-center">
+            <button class="btn btn-warning control-btn" onclick="sendGroundCommand('forward', { distance: 0.3 })">前進</button>
+            <button class="btn btn-warning control-btn" onclick="sendGroundCommand('backward', { distance: 0.3 })">後退</button>
+            <button class="btn btn-warning control-btn" onclick="sendGroundCommand('turn_by', { angle: -90 })">左轉</button>
+            <button class="btn btn-warning control-btn" onclick="sendGroundCommand('turn_by', { angle: 90 })">右轉</button>
+            <button class="btn btn-warning control-btn" onclick="sendGroundCommand('stop')">停止</button>
+            <button class="btn btn-warning control-btn" onclick="sendGroundCommand('follow')">跟隨</button>
+          </div>
+        </div>
+        <!-- 地面機器人專屬: 自訂 ASR & 自訂旋轉角度 -->
+        <div class="row row-margin">
+          <div class="col text-center">
+            <label for="ground-asr-input">ASR 輸入：</label>
+            <input type="text" id="ground-asr-input" placeholder="Hello, I am temi" class="mb-2"/>
+            <button class="btn btn-info control-btn" onclick="sendGroundAsr()">送出語音</button>
+          </div>
+          <div class="col text-center">
+            <label for="ground-angle-input">旋轉角度：</label>
+            <input type="number" id="ground-angle-input" placeholder="輸入角度" class="mb-2" style="width:100px"/>
+            <button class="btn btn-info control-btn" onclick="sendGroundRotate()">旋轉</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======== 無人船 (Boat) ======== -->
+      <div id="boat" class="device-section">
+        <h2 class="section-title">無人船控制介面</h2>
+        <!-- 內容略 ... -->
+      </div>
+
+      <!-- ======== 無人潛艇 (Submarine) ======== -->
+      <div id="submarine" class="device-section">
+        <h2 class="section-title">無人潛艇控制介面</h2>
+        <!-- 內容略 ... -->
+      </div>
+    </div>
+    <footer>
+      <p>&copy; 2024 台科大自主移動機器人實驗室 版權所有. All rights reserved by Autonomous Mobile Robot Lab in NTUST.</p>
+    </footer>
+    <!-- Bootstrap 5 JS（官方 CDN） -->
+    <script
+      src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"
+    ></script>
+    <script>
+      // ========== 選擇載具區 ========== //
+      function chooseDevice(sectionId) {
+        document.getElementById("main-buttons-area").style.display = "none";
+        showSection(sectionId);
+        if (sectionId === "drone") {
+          startUpdatingDroneStatus();
+        } else if (sectionId === "ground") {
+          startUpdatingGroundStatus();
+        }
+      }
+
+      function showSection(sectionId) {
+        const sections = document.querySelectorAll(".device-section");
+        sections.forEach((sec) => sec.classList.remove("active-section"));
+        const activeSection = document.getElementById(sectionId);
+        if (activeSection) {
+          activeSection.classList.add("active-section");
+        }
+      }
+
+      // ========== 無人機 指令 ========== //
+      function sendDroneCommand(command, parameters = {}) {
+        fetch("/drone_command", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command: command, ...parameters })
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.status !== "success") {
+              console.error("Drone command error:", data.message);
+            }
+          })
+          .catch((error) => {
+            console.error("Drone command error:", error);
+          });
+      }
+
+      // 無人機監控資訊
+      function startUpdatingDroneStatus() {
+        setInterval(() => {
+          fetch("/navdata")
+            .then((response) => response.json())
+            .then((data) => {
+              const statusDiv = document.getElementById("drone-status");
+              if (data.message && data.message === "Monitoring is off") {
+                statusDiv.innerHTML = `<span>${data.message}</span>`;
+                return;
+              }
+              statusDiv.innerHTML = `
+                <p>電池電量: ${
+                  data.Battery !== undefined
+                    ? data.Battery + "%"
+                    : "N/A"
+                }</p>
+                <p>俯仰角 (Theta): ${
+                  data.theta !== undefined
+                    ? data.theta.toFixed(2)
+                    : 0
+                }°</p>
+                <p>滾轉角 (Phi): ${
+                  data.phi !== undefined
+                    ? data.phi.toFixed(2)
+                    : 0
+                }°</p>
+                <p>偏航角 (Psi): ${
+                  data.psi !== undefined
+                    ? data.psi.toFixed(2)
+                    : 0
+                }°</p>
+                <p>高度: ${
+                  data.altitude !== undefined
+                    ? data.altitude.toFixed(2)
+                    : 0
+                } mm</p>
+                <p>水平速度 (Vx): ${
+                  data.vx !== undefined
+                    ? data.vx.toFixed(2)
+                    : 0
+                } mm/s</p>
+                <p>垂直速度 (Vy): ${
+                  data.vy !== undefined
+                    ? data.vy.toFixed(2)
+                    : 0
+                } mm/s</p>
+                <p>垂直速度 (Vz): ${
+                  data.vz !== undefined
+                    ? data.vz.toFixed(2)
+                    : 0
+                } mm/s</p>
+              `;
+            })
+            .catch((error) => {
+              console.error("Error fetching navdata:", error);
+            });
+        }, 1000);
+      }
+
+      // ========== 地面機器人 指令 ========== //
+      function sendGroundCommand(command, parameters = {}) {
+        fetch("/ground_robot_command", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command: command, parameters: parameters })
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.status !== "success") {
+              console.error("Error sending ground robot command:", data.message);
+            }
+          })
+          .catch((error) => {
+            console.error("Error sending ground robot command:", error);
+          });
+      }
+
+      // 地面機器人監控資訊
+      function startUpdatingGroundStatus() {
+        setInterval(() => {
+          fetch("/ground_robot_status")
+            .then((response) => response.json())
+            .then((data) => {
+              const statusDiv = document.getElementById("ground-status");
+              if (data.message && data.message === "Monitoring is off") {
+                statusDiv.innerHTML = `<span>${data.message}</span>`;
+                return;
+              }
+              // 確保後端有更新 robot_status["battery_percentage"]
+              const battery = data.battery_percentage !== null
+                ? data.battery_percentage
+                : "N/A";
+              statusDiv.innerHTML = `
+                <p>電池電量: ${battery}%</p>
+                <p>ASR 結果: ${data.asr_result}</p>
+                <p>位置列表: ${
+                  data.waypoint_list && data.waypoint_list.length > 0
+                    ? data.waypoint_list.join(", ")
+                    : "無"
+                }</p>
+              `;
+            })
+            .catch((error) => {
+              console.error("Error fetching ground robot status:", error);
+            });
+        }, 1000);
+      }
+
+      // 地面機器人相機開啟/關閉
+      function openGroundCamera() {
+        fetch("/ground_open_camera", { method: "POST" })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.status !== "success") {
+              console.error("Error opening ground camera:", data.message);
+            }
+          })
+          .catch((err) => {
+            console.error("Error opening ground camera:", err);
+          });
+      }
+
+      function closeGroundCamera() {
+        fetch("/ground_close_camera", { method: "POST" })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.status !== "success") {
+              console.error("Error closing ground camera:", data.message);
+            }
+          })
+          .catch((err) => {
+            console.error("Error closing ground camera:", err);
+          });
+      }
+
+      // 地面機器人自訂 ASR
+      function sendGroundAsr() {
+        const userInput = document.getElementById('ground-asr-input').value.trim();
+        if (userInput) {
+          sendGroundCommand('asr', { text: userInput });
+        }
+      }
+
+      // 地面機器人自訂旋轉角度
+      function sendGroundRotate() {
+        const angleInput = document.getElementById('ground-angle-input').value.trim();
+        if (angleInput) {
+          const angleValue = parseFloat(angleInput);
+          sendGroundCommand('turn_by', { angle: angleValue });
+        }
+      }
+    </script>
+  </body>
+</html>

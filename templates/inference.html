@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Spectrometer Inference</title>
+    <!-- socket.io -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.min.js"
+            crossorigin="anonymous"></script>
+    <!-- chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            text-align: center;
+        }
+        #video-stream {
+            width: 640px;
+            height: 480px;
+            border: 1px solid #ccc;
+            margin-bottom: 20px;
+        }
+        #chart-container {
+            width: 800px;
+            margin: 0 auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Spectrometer Inference</h1>
+
+    <!-- 視訊畫面 -->
+    <div id="video-stream">
+        <img id="video-frame" src="" alt="Video Stream" width="640" height="480">
+    </div>
+
+    <!-- 控制面板 -->
+    <div>
+        <!-- 相機選擇 -->
+        <label for="camera-select">選擇相機:</label>
+        <select id="camera-select">
+            {% for cam in cameras %}
+                <option value="{{ cam }}">USB {{ cam }}</option>
+            {% endfor %}
+        </select>
+        <button id="select-camera-btn">選擇相機</button>
+        <br><br>
+
+        <!-- 選擇遠端裝置 -->
+        <label for="remote-device-select">遠端裝置(資料夾):</label>
+        <select id="remote-device-select">
+            <option value="">--請選擇--</option>
+        </select>
+        <button id="refresh-device-list">刷新裝置清單</button>
+        <br><br>
+
+        <!-- 選擇模型 -->
+        <label for="model-select">可用模型:</label>
+        <select id="model-select">
+            <option value="">--請先選擇裝置--</option>
+        </select>
+        <button id="refresh-model-list">刷新模型清單</button>
+        <br><br>
+
+        <!-- 下載並更新模型 -->
+        <button id="update-model-btn">下載並更新模型</button>
+        <br><br>
+
+        <!-- 推理控制 -->
+        <button id="start-inference-btn">開始推理</button>
+        <button id="stop-inference-btn">停止推理</button>
+        <br><br>
+
+        <!-- 推理結果顯示 -->
+        <div>
+            <h3>推理結果</h3>
+            <p id="inference-result">尚未開始推理。</p>
+        </div>
+        <br>
+
+        <!--
+          修改重點：
+          1. 將波長最小/最大 (wmin, wmax) 設為唯讀 (readonly)
+          2. 不允許使用者手動輸入，真正的值會透過 get_labels() 從資料庫合併計算後填進來
+        -->
+        <label for="wmin">波長最小:</label>
+        <input type="number" id="wmin" value="1" readonly>
+        <label for="wmax">波長最大:</label>
+        <input type="number" id="wmax" value="1000" readonly>
+        <br><br>
+
+        <!-- 保存推理結果 -->
+        <button id="save-inference-btn">保存推理結果</button>
+    </div>
+
+    <!-- 圖表 -->
+    <div id="chart-container">
+        <canvas id="inference-chart"></canvas>
+    </div>
+
+    <script>
+        const socket = io();
+        const videoFrame = document.getElementById('video-frame');
+
+        // 相機
+        const cameraSelect = document.getElementById('camera-select');
+        const selectCameraBtn = document.getElementById('select-camera-btn');
+
+        // 遠端裝置(資料夾)
+        const remoteDeviceSelect = document.getElementById('remote-device-select');
+        const refreshDeviceListBtn = document.getElementById('refresh-device-list');
+
+        // 模型
+        const modelSelect = document.getElementById('model-select');
+        const refreshModelListBtn = document.getElementById('refresh-model-list');
+        const updateModelBtn = document.getElementById('update-model-btn');
+
+        // 推理
+        const startInferenceBtn = document.getElementById('start-inference-btn');
+        const stopInferenceBtn = document.getElementById('stop-inference-btn');
+        const inferenceResultP = document.getElementById('inference-result');
+        const saveInferenceBtn = document.getElementById('save-inference-btn');
+
+        // 波長 (唯讀)
+        const wminInput = document.getElementById('wmin');
+        const wmaxInput = document.getElementById('wmax');
+
+        // === socket.io 事件 ===
+
+        // 即時顯示影像
+        socket.on('video_frame', (data) => {
+            if (data && data.image) {
+                const arr = new Uint8Array(data.image);
+                const blob = new Blob([arr], { type: 'image/jpeg' });
+                const urlCreator = window.URL || window.webkitURL;
+                videoFrame.src = urlCreator.createObjectURL(blob);
+            }
+        });
+
+        // 推理結果
+        socket.on('inference_result', (data) => {
+            inferenceResultP.textContent = `Label=${data.label}, 置信度=${data.confidence.toFixed(4)}`;
+            // 若有光譜數據，可使用 data.wave, data.intensities 來更新圖表
+            if (data.wave && data.intensities) {
+                updateChart(data.wave, data.intensities);
+            }
+        });
+
+        // 推理狀態
+        socket.on('inference_status', (data) => {
+            if (data.status === 'started') {
+                alert("推理已開始");
+            } else if (data.status === 'stopped') {
+                alert("推理已停止");
+            } else if (data.status === 'error') {
+                alert("推理錯誤: " + data.message);
+            }
+        });
+
+        // 相機狀態
+        socket.on('camera_status', (data) => {
+            if (data.status === 'success') {
+                alert(`相機 ${data.camera_index} 開啟成功`);
+            } else if (data.status === 'fail') {
+                alert(`相機 ${data.camera_index} 無法開啟`);
+            } else {
+                alert(`無效相機索引: ${data.camera_index}`);
+            }
+        });
+
+        // Chart.js 初始化
+        let chart;
+        function initChart() {
+            const ctx = document.getElementById('inference-chart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: '強度',
+                        data: [],
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        borderWidth: 1,
+                        fill: false,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    animation: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            position: 'bottom',
+                            title: {
+                                display: true,
+                                text: '波長 (nm)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: '強度'
+                            },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+        initChart();
+
+        function updateChart(waves, intensities) {
+            chart.data.labels = waves;
+            chart.data.datasets[0].data = intensities;
+            chart.update();
+        }
+
+        // === 前端按鈕事件 ===
+
+        // 選擇相機
+        selectCameraBtn.addEventListener('click', () => {
+            const idx = parseInt(cameraSelect.value);
+            socket.emit('select_camera', { camera_index: idx });
+        });
+
+        // 取得遠端裝置清單
+        function fetchDeviceList() {
+            fetch('/available_devices')
+            .then(r => r.json())
+            .then(d => {
+                if (d.devices) {
+                    remoteDeviceSelect.innerHTML = '<option value="">--請選擇--</option>';
+                    d.devices.forEach(dev => {
+                        const opt = document.createElement('option');
+                        opt.value = dev;
+                        opt.textContent = dev;
+                        remoteDeviceSelect.appendChild(opt);
+                    });
+                } else if (d.error) {
+                    alert("取得裝置失敗: " + d.error);
+                }
+            })
+            .catch(err => console.error(err));
+        }
+        refreshDeviceListBtn.addEventListener('click', fetchDeviceList);
+
+        // 取得指定裝置的模型清單
+        function fetchModelList() {
+            const dev = remoteDeviceSelect.value;
+            if (!dev) {
+                alert("請先選擇遠端裝置");
+                return;
+            }
+            fetch(`/available_models/${dev}`)
+            .then(r => r.json())
+            .then(d => {
+                if (d.models) {
+                    modelSelect.innerHTML = '<option value="">--請選擇模型--</option>';
+                    d.models.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m;
+                        opt.textContent = m;
+                        modelSelect.appendChild(opt);
+                    });
+                } else if (d.error) {
+                    alert("取得模型失敗: " + d.error);
+                }
+            })
+            .catch(err => console.error(err));
+        }
+        refreshModelListBtn.addEventListener('click', fetchModelList);
+
+        // 下載並更新模型
+        updateModelBtn.addEventListener('click', () => {
+            const dev = remoteDeviceSelect.value;
+            const modelName = modelSelect.value;
+            if (!dev || !modelName) {
+                alert("請先選擇遠端裝置與模型");
+                return;
+            }
+            fetch('/update_model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    device: dev,
+                    model: modelName
+                })
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.message) {
+                    alert(d.message);
+                } else if (d.error) {
+                    alert("更新模型失敗: " + d.error);
+                }
+            })
+            .catch(err => console.error(err));
+        });
+
+        // === 取得該裝置所有標籤並計算「最小波長、最大波長」 ===
+        function fetchLabelsForDevice(deviceName) {
+            if (!deviceName) return;
+            fetch(`/get_labels?device=${deviceName}`)
+            .then(r => r.json())
+            .then(d => {
+                if (d.status === 'success') {
+                    let globalMin = Infinity;
+                    let globalMax = -Infinity;
+                    d.labels.forEach(label => {
+                        if (label.wavelength_min < globalMin) {
+                            globalMin = label.wavelength_min;
+                        }
+                        if (label.wavelength_max > globalMax) {
+                            globalMax = label.wavelength_max;
+                        }
+                    });
+                    if (globalMin === Infinity) globalMin = 1;
+                    if (globalMax === -Infinity) globalMax = 1000;
+                    wminInput.value = globalMin;
+                    wmaxInput.value = globalMax;
+                } else {
+                    alert("取得標籤失敗: " + d.message);
+                    wminInput.value = 1;
+                    wmaxInput.value = 1000;
+                }
+            })
+            .catch(err => console.error(err));
+        }
+
+        // 在選擇裝置後，自動抓取並更新波長顯示
+        remoteDeviceSelect.addEventListener('change', () => {
+            const dev = remoteDeviceSelect.value;
+            if (!dev) {
+                wminInput.value = 1;
+                wmaxInput.value = 100;
+                return;
+            }
+            fetchLabelsForDevice(dev);
+        });
+
+        // 開始推理
+        startInferenceBtn.addEventListener('click', () => {
+            const dev = remoteDeviceSelect.value;
+            if (!dev) {
+                alert("請先選擇遠端裝置(資料夾)");
+                return;
+            }
+            // 從唯讀欄位取得
+            const wmin = parseInt(wminInput.value);
+            const wmax = parseInt(wmaxInput.value);
+            socket.emit('start_inference', {
+                device: dev,
+                wavelength_min: wmin,
+                wavelength_max: wmax
+            });
+        });
+
+        // 停止推理
+        stopInferenceBtn.addEventListener('click', () => {
+            socket.emit('stop_inference');
+        });
+
+        // 保存推理結果
+        saveInferenceBtn.addEventListener('click', () => {
+            const dev = remoteDeviceSelect.value || "no_device";
+            fetch('/save_inference', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ device: dev })
+            })
+            .then(r => r.json())
+            .then(d => {
+                if (d.status === 'success') {
+                    alert("推理結果已儲存");
+                } else {
+                    alert("儲存失敗: " + d.message);
+                }
+            })
+            .catch(err => console.error(err));
+        });
+    </script>
+</body>
+</html>
